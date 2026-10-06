@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Go</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#e9ece6;--ink:#1f2a24;--mute:#5d6b62;--panel:#d7ddd3;--accent:#2f5d50}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17201b;--ink:#e4eae2;--mute:#9aa99f;--panel:#243029;--accent:#7fb7a4}}
+:root[data-theme="dark"]{--bg:#17201b;--ink:#e4eae2;--mute:#9aa99f;--panel:#243029;--accent:#7fb7a4}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Georgia,"Iowan Old Style",serif;display:flex;justify-content:center}
+main{width:100%;max-width:700px;padding:16px}
+h1{font-size:1.6rem;margin:0 0 12px;font-weight:600}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
+button,select{font:inherit;font-size:.95rem;padding:7px 12px;border-radius:6px;border:1px solid var(--mute);background:var(--panel);color:var(--ink);cursor:pointer}
+button[aria-pressed="true"]{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+button:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#wrap{width:100%}
+canvas{display:block;margin:0 auto;border-radius:4px;touch-action:manipulation;cursor:pointer}
+[hidden]{display:none!important}
+input{font:inherit;font-size:.95rem;padding:7px 10px;width:8em;border-radius:6px;border:1px solid var(--mute);background:var(--bg);color:var(--ink);text-transform:uppercase}
+#netmsg{color:var(--mute);font-size:.9rem;margin-bottom:10px;word-break:break-all}
+#status{margin:12px 0 4px;font-size:1.05rem;min-height:1.5em}
+#info{color:var(--mute);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Go</h1>
+<div class="bar">
+  <span role="group" aria-label="Board size">
+    <button data-n="9" aria-pressed="true">9×9</button>
+    <button data-n="13" aria-pressed="false">13×13</button>
+    <button data-n="19" aria-pressed="false">19×19</button>
+  </span>
+  <select id="mode" aria-label="Game mode">
+    <option value="ai">You (black) vs computer</option>
+    <option value="two">Two players (same screen)</option>
+    <option value="online">Online with a friend</option>
+  </select>
+  <select id="color" aria-label="Your color"><option value="1">Play black</option><option value="2">Play white</option><option value="r">Random color</option></select>
+  <select id="hc" aria-label="Handicap"><option value="0">No handicap</option><option value="1">Handicap: 1 (no komi)</option><option value="2">Handicap: 2 stones</option><option value="3">Handicap: 3 stones</option><option value="4">Handicap: 4 stones</option><option value="5">Handicap: 5 stones</option><option value="6">Handicap: 6 stones</option><option value="7">Handicap: 7 stones</option><option value="8">Handicap: 8 stones</option><option value="9">Handicap: 9 stones</option></select>
+  <button id="pass">Pass</button>
+  <button id="new">New game</button>
+</div>
+<div id="net" class="bar" hidden>
+  <button id="create">Create game</button>
+  <input id="code" placeholder="Game code" maxlength="6" aria-label="Game code">
+  <button id="join">Join</button>
+</div>
+<div id="netmsg" role="status"></div>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div id="status" aria-live="polite"></div>
+<div id="info"></div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('c'),ctx=cv.getContext('2d');
+const KOMI=7;
+let N=9,mode='ai',S,size=400,cell=40;
+let peer=null,conn=null,myColor=1,isHost=false,isGuest=false,code='';
+ 
+function hcPoints(n){
+  if(n<2)return[];
+  const[l,m,h]=N===9?[2,4,6]:N===13?[3,6,9]:[3,9,15];
+  const C=[[h,h],[l,l],[h,l],[l,h]],E=[[l,m],[h,m]],T=[[m,l],[m,h]],M=[[m,m]];
+  const pts=n<=4?C.slice(0,n):n===5?[...C,...M]:n===6?[...C,...E]:n===7?[...C,...E,...M]:n===8?[...C,...E,...T]:[...C,...E,...T,...M];
+  return pts.map(([x,y])=>y*N+x);
+}
+function init(){
+  const g=mode==='online'&&!isHost&&live();
+  const hc=g?S.hc:+$('hc').value,c=$('color').value;
+  const human=g?S.hostColor:(c==='r'?(Math.random()<.5?1:2):+c);
+  S={b:Array(N*N).fill(0),turn:hc>1?2:1,hist:[],passes:0,caps:[0,0,0],last:-1,phase:'play',dead:new Set(),note:'',hc,komi:hc?0.5:7,human,hostColor:human};
+  hcPoints(hc).forEach(i=>S.b[i]=1);
+  S.hist.push(S.b.join(''));
+  if(mode==='online')myColor=isHost?human:3-human;
+  resize();after();
+}
+function nbrs(i){const x=i%N,y=(i/N)|0,r=[];
+  if(x>0)r.push(i-1);if(x<N-1)r.push(i+1);if(y>0)r.push(i-N);if(y<N-1)r.push(i+N);return r}
+function group(b,i){
+  const c=b[i],seen=new Set([i]),libs=new Set(),q=[i];
+  while(q.length){const j=q.pop();for(const k of nbrs(j)){
+    if(b[k]===0)libs.add(k);else if(b[k]===c&&!seen.has(k)){seen.add(k);q.push(k)}}}
+  return{stones:[...seen],libs}
+}
+function tryMove(b0,i,color){
+  if(b0[i])return null;
+  const b=b0.slice();b[i]=color;let caps=0;
+  for(const k of nbrs(i)){
+    if(b[k]===3-color){const g=group(b,k);
+      if(g.libs.size===0){g.stones.forEach(s=>b[s]=0);caps+=g.stones.length}}}
+  if(group(b,i).libs.size===0)return null;
+  if(b.join('')===S.hist[S.hist.length-2])return{ko:true};
+  return{b,caps}
+}
+function play(i){
+  if(S.phase==='mark'){toggleDead(i);return}
+  if(S.phase!=='play')return;
+  const r=tryMove(S.b,i,S.turn);
+  if(!r){S.note='That point is not available.';draw();msg();return}
+  if(r.ko){S.note='Ko: that move would repeat the previous position. Play elsewhere first.';draw();msg();return}
+  S.b=r.b;S.caps[S.turn]+=r.caps;S.hist.push(S.b.join(''));
+  S.passes=0;S.last=i;S.turn=3-S.turn;S.note='';after();
+}
+function pass(){
+  if(S.phase!=='play')return;
+  S.passes++;S.last=-1;S.hist.push(S.b.join(''));S.turn=3-S.turn;S.note='';
+  if(S.passes>=2){S.phase='mark';S.dead=new Set()}
+  after();
+}
+function after(){
+  draw();msg();send();
+  if(S.phase==='play'&&mode==='ai'&&S.turn===3-S.human)setTimeout(ai,450);
+}
+function ai(){
+  const A=3-S.human,O=S.human;
+  if(S.phase!=='play'||S.turn!==A||mode!=='ai')return;
+  if(S.passes>=1){pass();return}
+  const stones=[];S.b.forEach((v,i)=>{if(v)stones.push(i)});
+  let best=-1e9,pick=-1;
+  for(let i=0;i<N*N;i++){
+    if(S.b[i])continue;
+    const r=tryMove(S.b,i,A);if(!r||r.ko)continue;
+    const nb=nbrs(i);
+    if(nb.every(k=>S.b[k]===A))continue; // keep own eyes
+    let s=r.caps*10+Math.random()*2;
+    const mine=group(r.b,i);
+    if(mine.libs.size===1)s-=8;
+    if(nb.some(k=>S.b[k]===A&&group(S.b,k).libs.size===1)&&mine.libs.size>1)s+=5;
+    if(nb.some(k=>r.b[k]===O&&group(r.b,k).libs.size===1))s+=4;
+    const x=i%N,y=(i/N)|0;
+    if(x===0||y===0||x===N-1||y===N-1)s-=1.5;
+    if(stones.length){let d=99;for(const t of stones)d=Math.min(d,Math.abs(t%N-x)+Math.abs(((t/N)|0)-y));s+=3-Math.min(d,3)}
+    const c=(N-1)/2;s-=(Math.abs(x-c)+Math.abs(y-c))*0.1;
+    if(s>best){best=s;pick=i}
+  }
+  if(pick<0||best<-2||(stones.length>N*N*0.55&&best<1))pass();else play(pick);
+}
+function toggleDead(i){
+  if(!S.b[i])return;
+  const g=group(S.b,i).stones,isDead=S.dead.has(i);
+  g.forEach(s=>isDead?S.dead.delete(s):S.dead.add(s));
+  draw();msg();send();
+}
+function score(){
+  const b=S.b.map((v,i)=>S.dead.has(i)?0:v);
+  let B=0,W=0;const terr=Array(N*N).fill(0),seen=new Set();
+  b.forEach(v=>{if(v===1)B++;else if(v===2)W++});
+  for(let i=0;i<N*N;i++){
+    if(b[i]||seen.has(i))continue;
+    const reg=[i],q=[i],borders=new Set();seen.add(i);
+    while(q.length){const j=q.pop();for(const k of nbrs(j)){
+      if(b[k])borders.add(b[k]);else if(!seen.has(k)){seen.add(k);reg.push(k);q.push(k)}}}
+    if(borders.size===1){const c=[...borders][0];reg.forEach(k=>terr[k]=c);if(c===1)B+=reg.length;else W+=reg.length}
+  }
+  return{B,W:W+S.komi,terr}
+}
+function msg(){
+  const st=$('status'),nm=['','Black','White'];
+  if(S.phase==='play'){
+    let t=nm[S.turn]+' to play';
+    if(mode==='ai'&&S.turn!==S.human)t='Computer is thinking…';
+    if(mode==='online')t=!live()?'Waiting for a connection…':(S.turn===myColor?'Your move':"Opponent's move")+' (you are '+nm[myColor].toLowerCase()+')';
+    if(S.passes===1)t+=' (previous player passed)';
+    st.textContent=S.note||t;
+  }else{
+    const sc=score(),d=sc.B-sc.W;
+    st.textContent='Both passed. Click dead stones to remove them. Black '+sc.B+' – White '+sc.W+(d>0?' → Black wins by '+d:' → White wins by '+(-d));
+  }
+  $('info').textContent='Captured: black '+S.caps[1]+', white '+S.caps[2]+'. Area scoring, komi '+S.komi+(S.hc?', handicap '+S.hc:'')+'.';
+  $('pass').disabled=S.phase!=='play'||(mode==='ai'&&S.turn!==S.human)||(mode==='online'&&(!live()||S.turn!==myColor));
+}
+function resize(){
+  const w=$('wrap').clientWidth;
+  size=Math.max(260,Math.min(w,680,window.innerHeight*0.78));
+  const d=window.devicePixelRatio||1;
+  cv.width=size*d;cv.height=size*d;cv.style.width=size+'px';cv.style.height=size+'px';
+  ctx.setTransform(d,0,0,d,0,0);cell=size/(N+1);draw();
+}
+function stone(x,y,c,faded){
+  const r=cell*0.46;ctx.save();ctx.globalAlpha=faded?0.35:1;
+  const g=ctx.createRadialGradient(x-r*.35,y-r*.35,r*.1,x,y,r);
+  if(c===1){g.addColorStop(0,'#58606a');g.addColorStop(1,'#0c0f12')}else{g.addColorStop(0,'#ffffff');g.addColorStop(1,'#cfd3d6')}
+  ctx.shadowColor='rgba(0,0,0,.35)';ctx.shadowBlur=r*.25;ctx.shadowOffsetY=r*.12;
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();ctx.restore();
+}
+function draw(){
+  if(!S)return;
+  ctx.fillStyle='#d9ac62';ctx.fillRect(0,0,size,size);
+  ctx.strokeStyle='#5a3d17';ctx.lineWidth=1;ctx.beginPath();
+  for(let i=0;i<N;i++){const p=cell*(i+1);ctx.moveTo(cell,p);ctx.lineTo(size-cell,p);ctx.moveTo(p,cell);ctx.lineTo(p,size-cell)}
+  ctx.stroke();
+  ctx.strokeRect(cell,cell,size-2*cell,size-2*cell);
+  const sp=N===9?[2,4,6]:N===13?[3,6,9]:[3,9,15];
+  ctx.fillStyle='#5a3d17';
+  for(const a of sp)for(const b of sp){ctx.beginPath();ctx.arc(cell*(a+1),cell*(b+1),cell*0.09,0,7);ctx.fill()}
+  const sc=S.phase==='mark'?score():null;
+  for(let i=0;i<N*N;i++){
+    const x=cell*((i%N)+1),y=cell*(((i/N)|0)+1);
+    if(S.b[i])stone(x,y,S.b[i],S.dead.has(i));
+    if(sc&&sc.terr[i]&&(!S.b[i]||S.dead.has(i))){
+      ctx.fillStyle=sc.terr[i]===1?'#111':'#fff';ctx.fillRect(x-cell*.13,y-cell*.13,cell*.26,cell*.26)}
+    if(i===S.last){ctx.strokeStyle=S.b[i]===1?'#fff':'#000';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(x,y,cell*0.2,0,7);ctx.stroke()}
+  }
+}
+cv.addEventListener('click',e=>{
+  if(mode==='ai'&&S.turn!==S.human&&S.phase==='play')return;
+  if(mode==='online'&&(!live()||(S.phase==='play'&&S.turn!==myColor)))return;
+  const r=cv.getBoundingClientRect(),px=(e.clientX-r.left)*(size/r.width),py=(e.clientY-r.top)*(size/r.height);
+  const x=Math.round(px/cell)-1,y=Math.round(py/cell)-1;
+  if(x<0||y<0||x>=N||y>=N)return;
+  play(y*N+x);
+});
+$('pass').onclick=pass;
+$('mode').onchange=e=>setMode(e.target.value);
+document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{
+  N=+b.dataset.n;document.querySelectorAll('[data-n]').forEach(o=>o.setAttribute('aria-pressed',o===b));init()});
+window.addEventListener('resize',resize);
+function live(){return !!(conn&&conn.open)}
+function snap(){return{N,S:{...S,dead:[...S.dead]}}}
+function persist(){if(!isHost)return;try{localStorage.setItem('go-host',JSON.stringify({code,...snap()}))}catch(e){}}
+function send(){if(mode!=='online')return;persist();if(live())conn.send(snap())}
+function recv(d){
+  N=d.N;S={...d.S,dead:new Set(d.S.dead)};
+  S.komi=S.komi||7;S.hc=S.hc||0;S.hostColor=S.hostColor||1;
+  myColor=isHost?S.hostColor:3-S.hostColor;
+  document.querySelectorAll('[data-n]').forEach(o=>o.setAttribute('aria-pressed',+o.dataset.n===N));
+  resize();msg();
+}
+function netmsg(t){$('netmsg').textContent=t}
+function reset(){
+  try{if(conn)conn.close()}catch(e){}
+  try{if(peer)peer.destroy()}catch(e){}
+  peer=conn=null;
+}
+function hook(c){
+  c.on('open',()=>{
+    conn=c;
+    if(isHost){netmsg('Friend connected.');send()}
+    else netmsg('Connected.');
+    msg();
+  });
+  c.on('data',recv);
+  c.on('close',()=>{conn=null;netmsg(isHost?'Friend left. They can reopen the link to reconnect.':'Disconnected from the host.');msg()});
+}
+function create(){
+  reset();isHost=true;isGuest=false;ctrl();
+  let saved=null;try{saved=JSON.parse(localStorage.getItem('go-host'))}catch(e){}
+  const abc='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  code=(saved&&saved.code)||Array.from({length:6},()=>abc[Math.floor(Math.random()*abc.length)]).join('');
+  if(saved&&saved.S)recv(saved);else init();
+  peer=new Peer('go-'+code);
+  peer.on('open',()=>{netmsg('Game code '+code+'. Share this link: '+location.origin+location.pathname+'#'+code);msg()});
+  peer.on('connection',c=>{if(live()){c.on('open',()=>c.close());return}hook(c)});
+  peer.on('error',e=>netmsg(e.type==='unavailable-id'?'Your previous session still holds this code. Wait a minute, then press Create game again.':'Connection problem: '+e.type));
+}
+function join(c){
+  c=(c||$('code').value).trim().toUpperCase();
+  if(!c){netmsg('Enter the game code.');return}
+  reset();isHost=false;isGuest=true;ctrl();
+  peer=new Peer();
+  peer.on('open',()=>{netmsg('Connecting…');hook(peer.connect('go-'+c,{reliable:true}))});
+  peer.on('error',e=>netmsg(e.type==='peer-unavailable'?'No game found with that code. Check it, or ask the host to open their page.':'Connection problem: '+e.type));
+}
+function setMode(v){
+  mode=v;reset();isHost=false;isGuest=false;ctrl();
+  $('net').hidden=v!=='online';netmsg('');
+  init();
+}
+function ctrl(){
+  $('color').disabled=mode==='two'||(mode==='online'&&isGuest);
+  $('hc').disabled=mode==='online'&&isGuest;
+}
+function changed(){
+  if(S.hist.length<=1)init();
+  else{S.note='Applies when you press New game.';msg()}
+}
+$('color').onchange=changed;$('hc').onchange=changed;
+$('new').onclick=()=>{if(mode==='online'){try{localStorage.removeItem('go-host')}catch(e){}}init()};
+$('create').onclick=create;
+$('join').onclick=()=>join();
+init();
+const h=location.hash.slice(1);
+if(h){$('mode').value='online';setMode('online');$('code').value=h;join(h)}
+</script>
+</body>
+</html>
+ 
