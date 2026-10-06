@@ -10,6 +10,8 @@ Once moves have been played, you have to press New game, which keeps the same co
 **One catch:** if the host has a saved game from earlier, Create game resumes it and ignores the dropdowns.  
 To start fresh with new settings, press New game first and then Create game.  
 
+
+
 **RULES:**
 
 The code enforces captures, no-suicide moves and the ko rule, and has a Pass button.  
