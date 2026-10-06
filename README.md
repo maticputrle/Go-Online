@@ -9,8 +9,8 @@ The code stays the same, and the new color and handicap apply straight away, inc
 Once moves have been played, you have to press New game, which keeps the same code and restarts with the current settings.  
 **One catch:** if the host has a saved game from earlier, Create game resumes it and ignores the dropdowns.  
 To start fresh with new settings, press New game first and then Create game.  
-
-
+  
+  
 
 **RULES:**
 
