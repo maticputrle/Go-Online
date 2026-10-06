@@ -12,7 +12,7 @@ To start fresh with new settings, press New game first and then Create game.
   
   
 
-**RULES:**
+**RULES:**  
 The code enforces captures, no-suicide moves and the ko rule, and has a Pass button.  
 When both players pass, click on any dead stones to remove them and the area score will update live.  
 White recieves 7 points of komi if there is no handicap active.
