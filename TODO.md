@@ -2,4 +2,4 @@
 
 - [ ] https://github.com/maticputrle/Go-Online/issues/1 Make index.html more readable  
 - [x] Improve the AI  
-- [ ] Add a practice/showcase mode
+- [x] Add a practice/showcase mode
