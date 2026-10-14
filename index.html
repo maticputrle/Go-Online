@@ -21,6 +21,8 @@ button:focus-visible,select:focus-visible{outline:3px solid var(--accent);outlin
 canvas{display:block;margin:0 auto;border-radius:4px;touch-action:manipulation;cursor:pointer}
 [hidden]{display:none!important}
 input{font:inherit;font-size:.95rem;padding:7px 10px;width:8em;border-radius:6px;border:1px solid var(--mute);background:var(--bg);color:var(--ink);text-transform:uppercase}
+input[type=checkbox]{width:auto;margin-right:5px}
+label{font-size:.95rem}
 #netmsg{color:var(--mute);font-size:.9rem;margin-bottom:10px;word-break:break-all}
 #status{margin:12px 0 4px;font-size:1.05rem;min-height:1.5em}
 #info{color:var(--mute);font-size:.9rem}
@@ -39,12 +41,24 @@ input{font:inherit;font-size:.95rem;padding:7px 10px;width:8em;border-radius:6px
     <option value="ai">Vs computer</option>
     <option value="two">Two players (same screen)</option>
     <option value="online">Online with a friend</option>
+    <option value="practice">Practice / showcase</option>
   </select>
   <select id="color" aria-label="Your color"><option value="1">Play black</option><option value="2">Play white</option><option value="r">Random color</option></select>
   <select id="hc" aria-label="Handicap"><option value="0">No handicap</option><option value="1">Handicap: 1 (no komi)</option><option value="2">Handicap: 2 stones</option><option value="3">Handicap: 3 stones</option><option value="4">Handicap: 4 stones</option><option value="5">Handicap: 5 stones</option><option value="6">Handicap: 6 stones</option><option value="7">Handicap: 7 stones</option><option value="8">Handicap: 8 stones</option><option value="9">Handicap: 9 stones</option></select>
   <select id="level" aria-label="Computer strength"><option value="b">Computer: Beginner</option><option value="e">Computer: Easy</option><option value="m" selected>Computer: Medium</option><option value="h">Computer: Hard</option></select>
   <button id="pass">Pass</button>
   <button id="new">New game</button>
+</div>
+<div id="prac" class="bar" hidden>
+  <span role="group" aria-label="Stone tool">
+    <button data-tool="1" aria-pressed="true">Black</button>
+    <button data-tool="2" aria-pressed="false">White</button>
+    <button data-tool="a" aria-pressed="false">Alternate</button>
+    <button data-tool="e" aria-pressed="false">Erase</button>
+  </span>
+  <label><input type="checkbox" id="auto" checked>Auto-capture</label>
+  <button id="undo">Undo</button>
+  <button id="clear">Clear</button>
 </div>
 <div id="net" class="bar" hidden>
   <button id="create">Create game</button>
@@ -231,6 +245,8 @@ const $=id=>document.getElementById(id);
 const cv=$('c'),ctx=cv.getContext('2d');
 const KOMI=7;
 let N=9,mode='ai',S,size=400,cell=40;
+const P={tool:'1',auto:true,undo:[],next:1};
+let prev={c:'1',h:'0'};
 let peer=null,conn=null,myColor=1,isHost=false,isGuest=false,code='';
  
 function hcPoints(n){
@@ -241,13 +257,15 @@ function hcPoints(n){
   return pts.map(([x,y])=>y*N+x);
 }
 function init(){
+  prev={c:$('color').value,h:$('hc').value};
   const g=mode==='online'&&!isHost&&live();
-  const hc=g?S.hc:+$('hc').value,c=$('color').value;
+  const hc=g?S.hc:(mode==='practice'?0:+$('hc').value),c=$('color').value;
   const human=g?S.hostColor:(c==='r'?(Math.random()<.5?1:2):+c);
   S={b:Array(N*N).fill(0),turn:hc>1?2:1,hist:[],passes:0,caps:[0,0,0],last:-1,phase:'play',dead:new Set(),note:'',hc,komi:hc?0.5:7,human,hostColor:human};
   hcPoints(hc).forEach(i=>S.b[i]=1);
   S.hist.push(S.b.join(''));
   if(mode==='online')myColor=isHost?human:3-human;
+  if(mode==='practice'){S.phase='practice';P.undo=[];P.next=1}
   resize();after();
 }
 function nbrs(i){const x=i%N,y=(i/N)|0,r=[];
@@ -361,6 +379,12 @@ function score(){
 }
 function msg(){
   const st=$('status'),nm=['','Black','White'];
+  if(mode==='practice'){
+    const tn={'1':'Black stones','2':'White stones',a:'alternating colors',e:'Erase'}[P.tool];
+    st.textContent='Practice board: tap a point to place stones ('+tn+'). Tap a stone of the other color to replace it.';
+    $('info').textContent='No turns or limits. Auto-capture '+(P.auto?'on: surrounded stones are removed.':'off: stones stay put.');
+    $('pass').disabled=true;return;
+  }
   if(S.phase==='play'){
     let t=nm[S.turn]+' to play';
     if(mode==='ai'&&S.turn!==S.human)t='Computer is thinking…';
@@ -414,7 +438,7 @@ cv.addEventListener('click',e=>{
   const r=cv.getBoundingClientRect(),px=(e.clientX-r.left)*(size/r.width),py=(e.clientY-r.top)*(size/r.height);
   const x=Math.round(px/cell)-1,y=Math.round(py/cell)-1;
   if(x<0||y<0||x>=N||y>=N)return;
-  play(y*N+x);
+  if(mode==='practice')place(y*N+x);else play(y*N+x);
 });
 $('pass').onclick=pass;
 $('mode').onchange=e=>setMode(e.target.value);
@@ -474,15 +498,43 @@ function setMode(v){
 }
 function ctrl(){
   $('level').hidden=mode!=='ai';
-  $('color').disabled=mode==='two'||(mode==='online'&&isGuest);
-  $('hc').disabled=mode==='online'&&isGuest;
+  $('color').disabled=mode==='two'||mode==='practice'||(mode==='online'&&isGuest);
+  $('hc').disabled=mode==='practice'||(mode==='online'&&isGuest);
+  $('prac').hidden=mode!=='practice';$('pass').hidden=mode==='practice';
 }
 function changed(){
-  if(S.hist.length<=1)init();
-  else{S.note='Applies when you press New game.';msg()}
+  if(S.hist.length>1&&!confirm('Start a new game with these settings? The current game will be lost.')){
+    $('color').value=prev.c;$('hc').value=prev.h;return;
+  }
+  init();
 }
 $('color').onchange=changed;$('hc').onchange=changed;
 $('new').onclick=()=>{if(mode==='online'){try{localStorage.removeItem('go-host')}catch(e){}}init()};
+function place(i){
+  const b=S.b,t=P.tool;
+  const c=t==='a'?P.next:+t;
+  if(t==='e'?!b[i]:b[i]===c)return;
+  P.undo.push({b:b.slice(),next:P.next});if(P.undo.length>300)P.undo.shift();
+  if(t==='e'){b[i]=0;S.last=-1}
+  else{
+    b[i]=c;S.last=i;if(t==='a')P.next=3-P.next;
+    if(P.auto){
+      for(const k of nbrs(i))if(b[k]===3-c){const g=group(b,k);if(g.libs.size===0)g.stones.forEach(x=>b[x]=0)}
+      const own=group(b,i);if(own.libs.size===0)own.stones.forEach(x=>b[x]=0);
+    }
+  }
+  draw();msg();
+}
+document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>{
+  P.tool=b.dataset.tool;
+  document.querySelectorAll('[data-tool]').forEach(o=>o.setAttribute('aria-pressed',o===b));msg();
+});
+$('auto').onchange=e=>{P.auto=e.target.checked;msg()};
+$('undo').onclick=()=>{const u=P.undo.pop();if(!u)return;S.b=u.b;P.next=u.next;S.last=-1;draw()};
+$('clear').onclick=()=>{
+  if(!S.b.some(v=>v))return;
+  P.undo.push({b:S.b.slice(),next:P.next});S.b=Array(N*N).fill(0);S.last=-1;draw();
+};
 $('create').onclick=create;
 $('join').onclick=()=>join();
 init();
@@ -491,4 +543,4 @@ if(h){$('mode').value='online';setMode('online');$('code').value=h;join(h)}
 </script>
 </body>
 </html>
- 
+  
